@@ -13,27 +13,25 @@ Usage:
     python backtest/diversify_carry.py
 
 RESULT (after fixing data/funding.py's Bybit pagination bug — see its own
-history): Bybit now returns full history (1400 prints, 2021-09-25 to
-present, vs the ~200/2-month stub before). Real 6-leg correlation matrix:
-BTC correlates 0.76 cross-exchange (binance vs bybit) and 0.51-0.71
-cross-asset — genuine, moderate diversification on both axes, not the
-near-zero or near-one extremes. Combined equal-weight Sharpe 9.25,
-max_dd -0.61% over the 471-day common window (limited by Bybit's later
-start date).
-
-CAVEAT, not swept under the rug: the injected-shock comparison at the
-bottom of this script's output degenerates to 0.00%/0.00% for the 2024-06
-window — the 471-day common-window intersection across all 6 legs is
-sparse (some exchange/day combinations have gaps after dropna), and this
-specific shock window likely has zero surviving overlapping days in that
-intersection. That number is a probable empty-set artifact, not a real
-"diversification fully absorbs the shock" result — flagged here rather
-than reported as a finding. The correlation matrix and full-window Sharpe
-above are computed the same intersected way but aren't window-specific,
-so they're not affected by this; only the single 14-day shock-window
-slice is suspect. Unresolved: worth rebuilding the shock test against
-each leg's own full history rather than the 6-way intersection, next time
-someone picks this up.
+history, AND fixing this script's own dropna()-intersection bug, which
+first reported a too-good Sharpe 9.25/max_dd -0.61% by silently shrinking
+the whole panel to Bybit's shorter, calmer 471-day window): with each leg
+weighted over its own real full history (union of dates, skipna mean, not
+intersection), the honest result is the SAME shape as the pre-Bybit-fix
+3-leg finding — DIVERSIFIED sharpe=2.877, max_dd=-12.93% over the full
+2087 days. Real 6-leg correlation: BTC 0.76 cross-exchange, 0.51-0.72
+cross-asset — genuine moderate diversification on both axes. But
+binanceusdm:SOL's own real max_dd is -35.36% over its own full history
+(a real tail event BTC/ETH never had), which is why the diversified
+sleeve's baseline drawdown doesn't actually improve much versus BTC alone
+(-0.41%) despite lower correlation — diversifying trades one exchange's
+tail risk for importing SOL's own real historical one, not a free
+reduction. The injected-shock comparison now uses real overlapping data
+(2024-06 is well inside every leg's history): single BTC leg -28.63%
+during the shock vs the diversified sleeve's +0.49% (no shock) / -10.25%
+(shocked) — diversification cuts this specific shock's damage
+proportionally, same conclusion as before the union-of-dates fix, just
+now on a bug-free number instead of a lucky one.
 """
 from __future__ import annotations
 
@@ -86,23 +84,32 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"  skip {label}: {e}")
 
-    returns_df = pd.DataFrame(returns).dropna()
-    print(f"\nOverlapping days across {len(returns_df.columns)} legs: {len(returns_df)} "
-          f"({returns_df.index.min().date()} - {returns_df.index.max().date()})\n")
+    # Union of dates (outer join), NOT intersection: a leg that starts later
+    # (Bybit, 2021-09) shouldn't shrink the whole panel down to its own
+    # shorter history. Correlation and Sharpe below use each leg's own full
+    # available range (pandas .corr()/.mean() already skip NaN pairwise).
+    returns_df = pd.DataFrame(returns).sort_index()
+    intersection = returns_df.dropna()
+    print(f"\nFull date range across {len(returns_df.columns)} legs: {len(returns_df)} days "
+          f"({returns_df.index.min().date()} - {returns_df.index.max().date()}); "
+          f"{len(intersection)} days where all {len(returns_df.columns)} legs have data\n")
 
-    print("=== Pairwise correlation ===")
+    print("=== Pairwise correlation (pairwise-complete, not restricted to the full intersection) ===")
     pd.set_option("display.width", 200)
     print(returns_df.corr().round(3).to_string())
 
-    equal_weight = returns_df.mean(axis=1)
+    # Equal-weight across whichever legs actually have data that day, so a
+    # leg's absence before it existed doesn't get silently treated as a 0%
+    # return (which would understate, not just dilute, the sleeve).
+    equal_weight = returns_df.mean(axis=1, skipna=True)
 
-    print(f"\n=== Individual legs vs diversified equal-weight sleeve ===")
+    print(f"\n=== Individual legs (own full history) vs diversified equal-weight sleeve ===")
     for col in returns_df.columns:
-        s, _, _, n = sharpe_stats(returns_df[col])
-        print(f"  {col}: sharpe={s:.3f}  max_dd={max_drawdown_pct(returns_df[col]):.2f}%")
-    ew_sharpe, _, _, _ = sharpe_stats(equal_weight)
-    print(f"  DIVERSIFIED (equal-weight all {len(returns_df.columns)}): "
-          f"sharpe={ew_sharpe:.3f}  max_dd={max_drawdown_pct(equal_weight):.2f}%")
+        s, _, _, n = sharpe_stats(returns_df[col].dropna())
+        print(f"  {col}: sharpe={s:.3f}  n={n}  max_dd={max_drawdown_pct(returns_df[col].dropna()):.2f}%")
+    ew_sharpe, _, _, ew_n = sharpe_stats(equal_weight)
+    print(f"  DIVERSIFIED (equal-weight, skipna): "
+          f"sharpe={ew_sharpe:.3f}  n={ew_n}  max_dd={max_drawdown_pct(equal_weight):.2f}%")
 
     # --- Shock only the binanceusdm:BTC leg, exactly like stress_test_carry.py,
     # and see how much the diversified sleeve absorbs vs the single-leg case ---
@@ -119,8 +126,8 @@ def main() -> None:
         stressed_btc = carry_returns_from_funding(shocked, carry_strat)
 
         stressed_df = returns_df.copy()
-        stressed_df[baseline_btc_col] = stressed_btc.reindex(stressed_df.index).fillna(0.0)
-        stressed_equal_weight = stressed_df.mean(axis=1)
+        stressed_df[baseline_btc_col] = stressed_btc.reindex(stressed_df.index)
+        stressed_equal_weight = stressed_df.mean(axis=1, skipna=True)
 
         def _window_mask(index: pd.DatetimeIndex) -> pd.Series:
             return pd.Series(
@@ -141,7 +148,7 @@ def main() -> None:
     out["diversified_equal_weight"] = equal_weight
     out.to_csv("results/diversified_carry_returns.csv")
 
-    summary_rows = [risk_summary(name, returns_df[name]) for name in returns_df.columns]
+    summary_rows = [risk_summary(name, returns_df[name].dropna()) for name in returns_df.columns]
     summary_rows.append(risk_summary("diversified_equal_weight", equal_weight))
     pd.DataFrame(summary_rows).to_csv("results/diversified_carry_summary.csv", index=False)
     print("\nSaved to results/diversified_carry_returns.csv and results/diversified_carry_summary.csv")
