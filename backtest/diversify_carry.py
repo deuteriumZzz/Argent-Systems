@@ -26,7 +26,25 @@ binanceusdm:SOL's own real max_dd is -35.36% over its own full history
 sleeve's baseline drawdown doesn't actually improve much versus BTC alone
 (-0.41%) despite lower correlation — diversifying trades one exchange's
 tail risk for importing SOL's own real historical one, not a free
-reduction. The injected-shock comparison now uses real overlapping data
+reduction.
+
+WHO WAS ON THE OTHER SIDE OF SOL'S DRAWDOWN, specifically (not a generic
+"funding can go negative" story): the underwater period runs 2022-04-30 to
+2023-01-13, with its sharpest leg during the FTX collapse week
+(2022-11-08 to 11-14) — SOL funding averaged -0.46%/8h that week and
+printed -2.00%/8h (Binance's exchange-enforced floor for SOL, pinned
+repeatedly) vs BTC's worst print the same week of only -0.12%/8h, 16.7x
+milder. SOL was FTX/Alameda's signature token; the panic was concentrated
+in it specifically, not the market broadly. Two implications: (1) an
+asset whose fortunes are unusually tied to a single counterparty can see
+funding pinned at the exchange's actual floor for days, not just dip
+below whatever a synthetic stress test assumed — stress_test_carry.py's
+-0.8%/8h default is 2.5x MILDER than what SOL genuinely printed here, so
+that script's "6.7x worse than history" framing undersold the real tail;
+(2) this is exactly the single-counterparty concentration risk carry
+diversification is supposed to reduce, so it isn't a reason to avoid
+diversifying into SOL — it's the reason the whole sleeve still needs a
+hedge/cap, same as everything else in this project. The injected-shock comparison now uses real overlapping data
 (2024-06 is well inside every leg's history): single BTC leg -28.63%
 during the shock vs the diversified sleeve's +0.49% (no shock) / -10.25%
 (shocked) — diversification cuts this specific shock's damage
