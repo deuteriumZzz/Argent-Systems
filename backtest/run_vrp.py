@@ -66,23 +66,29 @@ from data.fetch import fetch_ohlcv
 START = "2021-01-01"
 
 
-def main() -> None:
+def vrp_daily_pnl(start: str = START) -> pd.Series:
+    """Short-variance-swap daily mark-to-market proxy, factored out so
+    build_hedged_portfolio.py can add this as a 7th leg the same way
+    diversify_carry.py reuses stress_test_carry.carry_returns_from_funding."""
     dvol = fetch_dvol("BTC")
-    iv = dvol["close"] / 100.0  # decimal annualized IV
+    iv = dvol["close"] / 100.0
 
-    btc = fetch_ohlcv("BTC/USDT", "1d", START)
+    btc = fetch_ohlcv("BTC/USDT", "1d", start)
     btc.index = pd.to_datetime(btc.index, utc=True).normalize()
     log_ret = np.log(btc["close"]).diff()
 
     df = pd.DataFrame({"iv": iv, "log_ret": log_ret}).dropna()
-
     implied_var = df["iv"] ** 2
     realized_var_daily = (df["log_ret"] ** 2) * 365
-    daily_pnl = (implied_var - realized_var_daily) / 365
+    return (implied_var - realized_var_daily) / 365
+
+
+def main() -> None:
+    daily_pnl = vrp_daily_pnl()
 
     sharpe, skew, kurt, n = sharpe_stats(daily_pnl)
     psr = probabilistic_sharpe_ratio(sharpe, 0.0, n, skew, kurt)
-    print(f"Short-variance-swap proxy, {n} days ({df.index.min().date()} - {df.index.max().date()})")
+    print(f"Short-variance-swap proxy, {n} days ({daily_pnl.index.min().date()} - {daily_pnl.index.max().date()})")
     print(f"sharpe={sharpe:.3f}  skew={skew:.3f}  kurt={kurt:.3f}  PSR(vs 0)={psr:.4f}")
     print(f"cumulative return: {daily_pnl.sum() * 100:.1f}% of notional")
     print(f"worst single day: {daily_pnl.min() * 100:.2f}%  on {daily_pnl.idxmin().date()}")
@@ -99,7 +105,7 @@ def main() -> None:
     })
     print(yearly.to_string())
 
-    out = pd.DataFrame({"iv": df["iv"], "log_ret": df["log_ret"], "daily_pnl_pct_notional": daily_pnl})
+    out = pd.DataFrame({"daily_pnl_pct_notional": daily_pnl})
     out.to_csv("results/vrp_short_variance_returns.csv")
     print("\nSaved to results/vrp_short_variance_returns.csv")
 

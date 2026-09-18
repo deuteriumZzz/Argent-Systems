@@ -16,6 +16,26 @@ generalizing.
 
 Usage:
     python backtest/build_hedged_portfolio.py
+
+UPDATE (7th leg added — vol_risk_premium, backtest/run_vrp.py): correlates
+weakly with every other leg (-0.06 to +0.10), genuinely diversifying.
+Full-period capped-RP Sharpe actually DROPPED to 0.672 (was 0.949 with 6
+legs) while max_dd improved to -23.1% (was -41.2%) — a real Sharpe/
+drawdown tradeoff, not a strict improvement either way.
+
+MORE IMPORTANT, and NOT just a reassuring number this time: walk-forward
+train (2021-2022) Sharpe is -0.774, PSR=0.0000 -- decisively bad, not
+noise -- while test (2023-2025) is +1.634. Unlike v1 composite's failure
+mode (great in-sample, collapses out-of-sample from overfit parameters),
+this is the mirror image: bad in-sample, great out-of-sample, with no
+fitted parameters to blame. The honest read is NOT "this generalizes
+well" -- it's that 2021-2022 contains the worst crash cluster in the
+whole sample (Terra/Luna, Celsius/3AC, FTX) and 2023-2025 was a broad
+recovery/bull period; the split point happens to divide "the hard regime"
+from "the easy one" almost cleanly. A portfolio's OOS Sharpe looking great
+right after its train period contains the worst crashes on record is
+exactly the kind of result that needs a second, differently-placed split
+before being trusted -- not evidence of robustness on its own.
 """
 from __future__ import annotations
 
@@ -36,6 +56,7 @@ from backtest.portfolio_diversification_check import (
     sharpe_stats,
     sortino_ratio,
 )
+from backtest.run_vrp import vrp_daily_pnl
 from strategies.registry import load_strategies
 
 TRAIN_END = "2023-01-01"  # same split as backtest/tune_composite.py
@@ -50,6 +71,11 @@ CANDIDATES = [
     ("arbitrage_coinbase_premium_trend", "cross_exchange"),
     ("hedge_trend_vol_bear", "ohlcv"),
 ]
+# vol_risk_premium isn't in CANDIDATES/get_daily_returns's dispatch -- its
+# data contract (DVOL + realized vol, no strategies/registry.py signals(df))
+# doesn't fit the (name, data_type) tuple pattern the others share. Added
+# directly below instead, same way diversify_carry.py reuses
+# carry_returns_from_funding rather than forcing it through the registry.
 
 
 def capped_risk_parity_weights(returns_df: pd.DataFrame, vol_lookback: int, max_weight: float) -> pd.DataFrame:
@@ -82,8 +108,10 @@ def main() -> None:
     strategies = {s.meta["name"]: s for s in load_strategies()}
 
     returns = {name: get_daily_returns(name, dtype, strategies) for name, dtype in CANDIDATES}
+    returns["vol_risk_premium"] = vrp_daily_pnl()
+    n_legs = len(CANDIDATES) + 1
     returns_df = pd.DataFrame(returns).dropna()
-    print(f"Overlapping days across all {len(CANDIDATES)} legs: {len(returns_df)} "
+    print(f"Overlapping days across all {n_legs} legs: {len(returns_df)} "
           f"({returns_df.index.min().date()} - {returns_df.index.max().date()})\n")
 
     print("=== Pairwise correlation of daily returns ===")
@@ -103,7 +131,7 @@ def main() -> None:
     print(f"\nAverage weight per leg — capped risk-parity (max {MAX_LEG_WEIGHT:.0%}/leg):")
     print(capped_weights.mean().round(3).to_string())
 
-    print(f"\n=== Full-period Sharpe: equal-weight vs uncapped RP vs capped RP ({len(CANDIDATES)} legs incl. hedge) ===")
+    print(f"\n=== Full-period Sharpe: equal-weight vs uncapped RP vs capped RP ({n_legs} legs incl. hedge+VRP) ===")
     report_split("equal_weight", equal_weight)
     report_split("risk_parity_uncapped", uncapped_rp)
     report_split(f"risk_parity_capped_{MAX_LEG_WEIGHT:.0%}", capped_rp)
