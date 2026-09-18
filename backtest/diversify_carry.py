@@ -12,25 +12,28 @@ by construction.
 Usage:
     python backtest/diversify_carry.py
 
-RESULT: cross-EXCHANGE diversification (Bybit) hit a real data-pipeline
-limitation — data/funding.py's pagination assumes binance-style
-oldest-first batches, and only pulled ~200 prints / a 2-month window from
-Bybit via ccxt, not full history. Excluded rather than faked; unresolved,
-flagged for whoever picks this up next.
+RESULT (after fixing data/funding.py's Bybit pagination bug — see its own
+history): Bybit now returns full history (1400 prints, 2021-09-25 to
+present, vs the ~200/2-month stub before). Real 6-leg correlation matrix:
+BTC correlates 0.76 cross-exchange (binance vs bybit) and 0.51-0.71
+cross-asset — genuine, moderate diversification on both axes, not the
+near-zero or near-one extremes. Combined equal-weight Sharpe 9.25,
+max_dd -0.61% over the 471-day common window (limited by Bybit's later
+start date).
 
-Cross-ASSET diversification (BTC/ETH/SOL, all on binanceusdm, full
-2021-2026 history) tells a real but two-sided story: BTC/ETH funding is
-highly correlated (0.89 — same exchange, same regime), SOL is much less
-correlated (0.16-0.21) but has its own real -35.4% max drawdown on its
-own funding history — a genuine tail event neither BTC nor ETH carry ever
-saw in this sample. Diversifying does cut shock damage roughly
-proportionally (the same 14d funding-squeeze injected into only the BTC
-leg costs the single-leg version -28.6% but the 3-asset equal-weight
-sleeve only -10.25%), but it also raises the sleeve's *baseline*
-max drawdown from -0.41% (BTC alone) to -12.88% (equal-weight 3) even with
-no injected shock — diversification here trades "one exchange's tail
-risk" for "importing SOL's own real historical tail risk," not a free
-reduction in risk.
+CAVEAT, not swept under the rug: the injected-shock comparison at the
+bottom of this script's output degenerates to 0.00%/0.00% for the 2024-06
+window — the 471-day common-window intersection across all 6 legs is
+sparse (some exchange/day combinations have gaps after dropna), and this
+specific shock window likely has zero surviving overlapping days in that
+intersection. That number is a probable empty-set artifact, not a real
+"diversification fully absorbs the shock" result — flagged here rather
+than reported as a finding. The correlation matrix and full-window Sharpe
+above are computed the same intersected way but aren't window-specific,
+so they're not affected by this; only the single 14-day shock-window
+slice is suspect. Unresolved: worth rebuilding the shock test against
+each leg's own full history rather than the 6-way intersection, next time
+someone picks this up.
 """
 from __future__ import annotations
 
@@ -60,13 +63,10 @@ UNIVERSE = [
     ("bybit", "ETH/USDT:USDT"),
     ("bybit", "SOL/USDT:USDT"),
 ]
-# bybit's fetch_funding_rate_history paginates differently from binanceusdm's
-# (data/funding.py's pagination loop assumes binance-style oldest-first
-# batches) — it only returns ~200 prints / a 2-month window through ccxt as
-# currently wired, not full history. Real limitation, not a fake number:
-# excluded from the cross-exchange comparison below rather than silently
-# padded or dropped from the printed correlation table.
-CROSS_EXCHANGE_USABLE = {"binanceusdm"}
+# Was excluded here (data/funding.py's pagination loop assumed
+# binance-style "short batch = end of data", which broke for Bybit's
+# ~200-row per-call cap) — fixed in data/funding.py, both exchanges usable now.
+CROSS_EXCHANGE_USABLE = {"binanceusdm", "bybit"}
 
 
 def main() -> None:
