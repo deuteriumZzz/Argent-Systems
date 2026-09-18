@@ -36,6 +36,21 @@ from "the easy one" almost cleanly. A portfolio's OOS Sharpe looking great
 right after its train period contains the worst crashes on record is
 exactly the kind of result that needs a second, differently-placed split
 before being trusted -- not evidence of robustness on its own.
+
+FOLLOW-UP, assumption-free per-year breakdown (no train/test framing at
+all, just sharpe_stats per calendar year on the saved capped-RP column in
+results/hedged_portfolio_returns.csv):
+  2021: -0.84   2022: -0.72   2023: +2.57   2024: +2.42   2025: -0.08   2026: +0.21
+Five different split points (2022-01 through 2024-01) all show the same
+pattern: train negative whenever it includes 2021-2022, test strongly
+positive whenever it includes 2023-2024. This ISN'T "the portfolio
+generalizes out-of-sample" -- it's that the entire long-run Sharpe is
+carried by ONE 2-year window (2023-2024), with two bad years before it
+and two flat/mediocre years (2025: -0.08, 2026: +0.21) after it. The most
+recent data -- what actually matters for "would this work starting
+tomorrow" -- is unimpressive, not strong. Revise the earlier "OOS Sharpe
+1.634 looks great" framing accordingly: it was real for 2023-2024
+specifically, not a demonstrated durable edge going forward.
 """
 from __future__ import annotations
 
