@@ -1,0 +1,145 @@
+"""Extends portfolio_diversification_check.py with the one leg missing from
+every strategy tested in this project so far: something that actually
+profits when BTC falls, instead of just going flat/losing less. Also caps
+risk-parity's weight per leg, because the uncapped version in
+portfolio_diversification_check.py lets carry_static_positive_funding eat
+the whole portfolio (results/risk_summary.csv: risk-parity weight is
+almost entirely carry) — great backtest Sharpe, but carry's low volatility
+in this sample is exactly the "steady until it isn't" shape that blows up
+in a funding squeeze the backtest window never saw. Capping forces the
+portfolio to actually hold the other legs, at the cost of some in-sample
+Sharpe.
+
+Walk-forward split matches tune_composite.py's TRAIN_END, so this result
+is comparable to that script's warning about in-sample results not
+generalizing.
+
+Usage:
+    python backtest/build_hedged_portfolio.py
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np
+import pandas as pd
+
+from backtest.portfolio_diversification_check import (
+    cvar,
+    get_daily_returns,
+    max_drawdown_pct,
+    probabilistic_sharpe_ratio,
+    risk_summary,
+    sharpe_stats,
+    sortino_ratio,
+)
+from strategies.registry import load_strategies
+
+TRAIN_END = "2023-01-01"  # same split as backtest/tune_composite.py
+MAX_LEG_WEIGHT = 0.35  # cap so no single leg (carry) can dominate risk-parity
+VOL_LOOKBACK = 30
+
+CANDIDATES = [
+    ("niche_dual_thrust", "ohlcv"),
+    ("academic_turn_of_month_seasonality", "ohlcv"),
+    ("onchain_hash_ribbon", "onchain"),
+    ("carry_static_positive_funding", "funding_rate"),
+    ("arbitrage_coinbase_premium_trend", "cross_exchange"),
+    ("hedge_trend_vol_bear", "ohlcv"),
+]
+
+
+def capped_risk_parity_weights(returns_df: pd.DataFrame, vol_lookback: int, max_weight: float) -> pd.DataFrame:
+    rolling_vol = returns_df.rolling(vol_lookback).std()
+    inv_vol = 1 / rolling_vol.replace(0, np.nan)
+    raw_weights = inv_vol.div(inv_vol.sum(axis=1), axis=0)
+
+    # Clip-and-renormalize: cap the loudest leg, redistribute the excess
+    # proportionally to everyone else, repeat until nothing exceeds the cap
+    # (a couple of passes always suffices for a handful of legs).
+    weights = raw_weights.clip(upper=max_weight)
+    for _ in range(10):
+        deficit = 1 - weights.sum(axis=1)
+        if (deficit.abs() < 1e-9).all():
+            break
+        room = (max_weight - weights).clip(lower=0)
+        room_total = room.sum(axis=1).replace(0, np.nan)
+        add = room.div(room_total, axis=0).mul(deficit, axis=0).fillna(0.0)
+        weights = (weights + add).clip(upper=max_weight)
+    return weights.shift(1)
+
+
+def report_split(name: str, r: pd.Series) -> None:
+    sharpe, skew, kurt, n = sharpe_stats(r)
+    psr = probabilistic_sharpe_ratio(sharpe, 0.0, n, skew, kurt) if n > 2 else float("nan")
+    print(f"  {name}: sharpe={sharpe:.3f}  n={n}  PSR(vs 0)={psr:.4f}  max_dd={max_drawdown_pct(r):.2f}%")
+
+
+def main() -> None:
+    strategies = {s.meta["name"]: s for s in load_strategies()}
+
+    returns = {name: get_daily_returns(name, dtype, strategies) for name, dtype in CANDIDATES}
+    returns_df = pd.DataFrame(returns).dropna()
+    print(f"Overlapping days across all {len(CANDIDATES)} legs: {len(returns_df)} "
+          f"({returns_df.index.min().date()} - {returns_df.index.max().date()})\n")
+
+    print("=== Pairwise correlation of daily returns ===")
+    pd.set_option("display.width", 200)
+    print(returns_df.corr().round(3).to_string())
+
+    equal_weight = returns_df.mean(axis=1)
+    uncapped_rp_weights = (1 / returns_df.rolling(VOL_LOOKBACK).std().replace(0, np.nan))
+    uncapped_rp_weights = uncapped_rp_weights.div(uncapped_rp_weights.sum(axis=1), axis=0).shift(1)
+    uncapped_rp = (returns_df * uncapped_rp_weights).sum(axis=1, min_count=1).dropna()
+
+    capped_weights = capped_risk_parity_weights(returns_df, VOL_LOOKBACK, MAX_LEG_WEIGHT)
+    capped_rp = (returns_df * capped_weights).sum(axis=1, min_count=1).dropna()
+
+    print(f"\nAverage weight per leg — uncapped risk-parity:")
+    print(uncapped_rp_weights.mean().round(3).to_string())
+    print(f"\nAverage weight per leg — capped risk-parity (max {MAX_LEG_WEIGHT:.0%}/leg):")
+    print(capped_weights.mean().round(3).to_string())
+
+    print(f"\n=== Full-period Sharpe: equal-weight vs uncapped RP vs capped RP ({len(CANDIDATES)} legs incl. hedge) ===")
+    report_split("equal_weight", equal_weight)
+    report_split("risk_parity_uncapped", uncapped_rp)
+    report_split(f"risk_parity_capped_{MAX_LEG_WEIGHT:.0%}", capped_rp)
+
+    # --- Walk-forward: does the capped-RP portfolio's edge survive
+    # out-of-sample, or is it another case of composite_tuning_top10_oos.csv
+    # (train Sharpe ~1.0 that collapses to 0.07-0.29 out-of-sample)? ---
+    train = capped_rp[capped_rp.index < TRAIN_END]
+    test = capped_rp[capped_rp.index >= TRAIN_END]
+    print(f"\n=== Walk-forward split at {TRAIN_END} — capped risk-parity portfolio ===")
+    report_split("train", train)
+    report_split("test (out-of-sample)", test)
+
+    train_eq = equal_weight[equal_weight.index < TRAIN_END]
+    test_eq = equal_weight[equal_weight.index >= TRAIN_END]
+    print(f"\n=== Walk-forward split at {TRAIN_END} — equal-weight portfolio (for comparison) ===")
+    report_split("train", train_eq)
+    report_split("test (out-of-sample)", test_eq)
+
+    out = returns_df.copy()
+    out["portfolio_equal_weight"] = equal_weight
+    out["portfolio_risk_parity_uncapped"] = uncapped_rp
+    out[f"portfolio_risk_parity_capped_{MAX_LEG_WEIGHT:.0%}"] = capped_rp
+    out.to_csv("results/hedged_portfolio_returns.csv")
+    print("\nSaved daily returns to results/hedged_portfolio_returns.csv")
+
+    summary_rows = [risk_summary(name, returns_df[name]) for name in returns_df.columns]
+    summary_rows.append(risk_summary("portfolio_equal_weight", equal_weight))
+    summary_rows.append(risk_summary("portfolio_risk_parity_uncapped", uncapped_rp))
+    summary_rows.append(risk_summary(f"portfolio_risk_parity_capped_{MAX_LEG_WEIGHT:.0%}", capped_rp))
+    summary = pd.DataFrame(summary_rows)
+    print("\n=== Risk summary: Sharpe vs Sortino vs CVaR(95%) vs max drawdown ===")
+    print(summary.to_string(index=False))
+    summary.to_csv("results/hedged_portfolio_summary.csv", index=False)
+    print("\nSaved to results/hedged_portfolio_summary.csv")
+
+
+if __name__ == "__main__":
+    main()
